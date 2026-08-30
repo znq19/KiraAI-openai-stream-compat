@@ -29,6 +29,11 @@ from core.utils.model_clients import (
     OpenAICompatibleLLMClient,
     OpenAICompatibleTTSClient,
 )
+
+try:  # KiraAI v2.32.0+ 新增统一 STT 客户端，旧版本缺失时降级
+    from core.utils.model_clients import OpenAICompatibleSTTClient
+except Exception:  # pragma: no cover
+    OpenAICompatibleSTTClient = None
 from core.utils.media_refs import resolve_media_references
 
 try:  # 官方 openai provider 内置图片/嵌入客户端，缺失时降级为仅 LLM/TTS
@@ -357,6 +362,8 @@ class OpenAIStreamCompatProvider(BaseProvider):
         ModelType.LLM: OpenAIStreamCompatLLMClient,
         ModelType.TTS: OpenAICompatibleTTSClient,
     }
+    if OpenAICompatibleSTTClient is not None:
+        models[ModelType.STT] = OpenAICompatibleSTTClient
     if OpenAIImageClient is not None:
         models[ModelType.IMAGE] = OpenAIImageClient
     if OpenAIEmbeddingClient is not None:
