@@ -1,0 +1,153 @@
+{
+  "provider_config": {
+    "base_url": {
+      "name": "Base URL",
+      "type": "string",
+      "default": "https://api.openai.com/v1",
+      "hint": "Base URL, compatible to OpenAI format platform",
+      "locales": {
+        "zh": { "name": "Base URL", "hint": "兼容 OpenAI 格式平台的 Base URL" }
+      }
+    },
+    "api_key": {
+      "name": "API Key",
+      "type": "sensitive",
+      "default": null,
+      "hint": "Your API Key from your provider",
+      "locales": {
+        "zh": { "name": "API 密钥", "hint": "你的 API 密钥" }
+      }
+    },
+    "section_advanced": {
+      "type": "section",
+      "name": "Advanced Settings",
+      "hint": "Advanced configuration options",
+      "collapsed": true,
+      "locales": {
+        "zh": { "name": "高级设置", "hint": "高级配置选项" }
+      },
+      "fields": {
+        "headers": {
+          "name": "Custom Headers",
+          "type": "json",
+          "default": {},
+          "hint": "Custom headers passed to OpenAI Client",
+          "locales": {
+            "zh": { "name": "自定义请求头", "hint": "传递给 OpenAI 客户端的自定义请求头" }
+          }
+        }
+      }
+    }
+  },
+  "model_config": {
+    "llm": {
+      "timeout": {
+        "name": "Timeout",
+        "type": "integer",
+        "default": 120,
+        "min": 1,
+        "hint": "Timeout seconds",
+        "locales": {
+          "zh": { "name": "超时", "hint": "超时秒数" }
+        }
+      },
+      "section_advanced": {
+        "type": "section",
+        "name": "Advanced Settings",
+        "hint": "Advanced model configuration options",
+        "collapsed": true,
+        "locales": {
+          "zh": { "name": "高级设置", "hint": "高级模型配置选项" }
+        },
+        "fields": {
+          "temperature": {
+            "name": "Temperature",
+            "type": "float",
+            "default": null,
+            "min": 0,
+            "max": 2,
+            "hint": "Model temperature",
+            "locales": {
+              "zh": { "name": "温度", "hint": "模型温度" }
+            }
+          },
+          "extra_body": {
+            "name": "Extra Body",
+            "type": "json",
+            "default": {},
+            "hint": "Additional fields merged into the request body (JSON object)",
+            "locales": {
+              "zh": { "name": "自定义请求体", "hint": "合并到请求体中的额外字段（JSON 对象）" }
+            }
+          }
+        }
+      },
+      "section_bridge": {
+        "type": "section",
+        "name": "Bridge Settings",
+        "hint": "Stream / envelope bridge options for non-standard endpoints",
+        "collapsed": true,
+        "locales": {
+          "zh": { "name": "桥接设置", "hint": "针对非标准端点的流式 / 信封解析选项" }
+        },
+        "fields": {
+          "mode": {
+            "name": "Mode",
+            "type": "enum",
+            "options": ["auto", "stream", "envelope"],
+            "default": "auto",
+            "hint": "auto: stream first, fallback to envelope on failure; stream: always use aggregated streaming; envelope: always parse the model_extra envelope",
+            "locales": {
+              "zh": { "name": "模式", "hint": "auto：流式优先，失败自动退回信封解析；stream：始终走流式聚合；envelope：始终解析 model_extra 信封" }
+            }
+          },
+          "envelope_path": {
+            "name": "Envelope Path",
+            "type": "string",
+            "default": "data",
+            "hint": "Path (relative to response.model_extra) at which the envelope payload is stored. Empty to disable envelope fallback.",
+            "locales": {
+              "zh": { "name": "信封路径", "hint": "信封载荷在 response.model_extra 中的相对路径。留空则禁用信封兜底。" }
+            }
+          },
+          "content_path": {
+            "name": "Content Path",
+            "type": "string",
+            "default": "choices.0.message.content",
+            "hint": "Dot path of the text content, relative to response or the envelope root",
+            "locales": {
+              "zh": { "name": "内容路径", "hint": "文本内容的点分路径，相对 response 或信封根" }
+            }
+          },
+          "reasoning_path": {
+            "name": "Reasoning Path",
+            "type": "string",
+            "default": "choices.0.message.reasoning",
+            "hint": "Dot path of reasoning content. Field name reasoning is auto-compat with standard reasoning_content.",
+            "locales": {
+              "zh": { "name": "推理路径", "hint": "推理内容的点分路径。字段名为 reasoning 时自动兼容标准 reasoning_content。" }
+            }
+          },
+          "tool_calls_path": {
+            "name": "Tool Calls Path",
+            "type": "string",
+            "default": "choices.0.message.tool_calls",
+            "hint": "Dot path of the tool calls list",
+            "locales": {
+              "zh": { "name": "工具调用路径", "hint": "工具调用列表的点分路径" }
+            }
+          },
+          "usage_path": {
+            "name": "Usage Path",
+            "type": "string",
+            "default": "usage",
+            "hint": "Dot path of the token usage object",
+            "locales": {
+              "zh": { "name": "用量路径", "hint": "token 用量对象的点分路径" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
