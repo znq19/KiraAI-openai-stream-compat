@@ -147,3 +147,26 @@ A：非标准兼容实现。本插件默认路径就用 `reasoning`，但会自�
 ## 📄 许可证
 
 [AGPL-3.0](LICENSE)
+
+---
+
+<details>
+<summary>📜 更新日志（点击展开）</summary>
+
+### v1.1.0（2026-08-30）
+
+- 🐛 **修复：usage 字段名回退逻辑**。`usage.get("prompt_tokens", fallback)` 在端点返回 `prompt_tokens: null`（而非缺失）时会拿到 `null` 而不是回退值，改为 `is not None` 判断后再回退 `input_tokens` / `output_tokens`；`cached_tokens` 同款处理。流式（`_extract_usage`）与非流式（`_chat_envelope`）两条路径都已修复
+- 🎯 **修复：token 数量为 0 不再被误判**。回退判断刻意用 `is not None` 而非 `or`，避免 `cached_tokens: 0`（合法值，代表无缓存命中）被当成缺失
+- 🧩 **重构：schema 职责拆分**。新增 `provider-schema.json` 管理 Provider 表单与模型「桥接设置」字段，`schema.json` 只保留插件配置页描述；`initialize` 内置旧版布局回退，升级不会丢表单
+- 🔄 **兼容：配置布局双支持**。插件配置读取兼容 section 嵌套与旧版扁平两种存储布局，section 嵌套优先，扁平字段仅作回退；WebUI 保存配置后热重载即时生效，不受旧配置残留影响
+- 📐 **新增：模式继承链**。模型级 `section_bridge.mode` 优先 → 插件配置页默认模式 → `auto`，`_bridge_mode` 统一收敛
+- 🔥 **新增：Provider 热重载补载**。插件启动时自动遍历已配置 Provider，对 `openai-stream-compat` 格式的既有实例补注册并重新实例化，无需手动重建
+- 📄 **修正：许可证标注**。README 许可证由误写的 MIT 更正为 AGPL-3.0，与仓库 LICENSE 一致
+
+### v1.0.x（初始版本）
+
+- 🚀 **首发**：插件级 Provider 注册，流式优先 + 信封兜底，`reasoning` ↔ `reasoning_content` 字段兼容，流式用量提取
+- 🛠️ **路径全可配**：信封 / 内容 / 推理 / 工具调用 / 用量路径支持点分自定义
+- 🎙️ **全模型类型**：LLM / TTS / 图像 / 嵌入（STT 随 v2.32.0 可用后加入）
+
+</details>
