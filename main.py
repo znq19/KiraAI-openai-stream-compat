@@ -257,10 +257,21 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
             u = extra.get("usage")
             if isinstance(u, dict):
                 details = u.get("prompt_tokens_details") or {}
+                # 字段名兼容：prompt_tokens→input_tokens / completion_tokens→output_tokens；
+                # 用 is not None 判断而非 or，避免 token 数量为 0 时被误判为缺失
+                in_t = u.get("prompt_tokens")
+                if in_t is None:
+                    in_t = u.get("input_tokens")
+                out_t = u.get("completion_tokens")
+                if out_t is None:
+                    out_t = u.get("output_tokens")
+                cached = details.get("cached_tokens")
+                if cached is None:
+                    cached = u.get("cached_tokens")
                 return {
-                    "input_tokens": u.get("prompt_tokens", u.get("input_tokens")),
-                    "output_tokens": u.get("completion_tokens", u.get("output_tokens")),
-                    "cached_tokens": details.get("cached_tokens", u.get("cached_tokens")),
+                    "input_tokens": in_t,
+                    "output_tokens": out_t,
+                    "cached_tokens": cached,
                 }
         return None
 
@@ -423,10 +434,21 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
                 })
 
         if isinstance(usage, dict):
-            resp.input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
-            resp.output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+            # 字段名兼容：prompt_tokens→input_tokens / completion_tokens→output_tokens；
+            # 用 is not None 判断而非 or，避免 token 数量为 0 时被误判为缺失
+            in_t = usage.get("prompt_tokens")
+            if in_t is None:
+                in_t = usage.get("input_tokens")
+            out_t = usage.get("completion_tokens")
+            if out_t is None:
+                out_t = usage.get("output_tokens")
             details = usage.get("prompt_tokens_details") or {}
-            resp.cached_tokens = details.get("cached_tokens", usage.get("cached_tokens"))
+            cached = details.get("cached_tokens")
+            if cached is None:
+                cached = usage.get("cached_tokens")
+            resp.input_tokens = in_t
+            resp.output_tokens = out_t
+            resp.cached_tokens = cached
         elif usage is not None:
             resp.input_tokens = getattr(usage, "prompt_tokens", None)
             resp.output_tokens = getattr(usage, "completion_tokens", None)
