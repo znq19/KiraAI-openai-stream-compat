@@ -6,7 +6,8 @@
   会被整体塞进 model_extra['data'] 信封，顶层 choices 为空、usage 为 None，
   导致标准 OpenAICompatibleLLMClient 解析不到任何内容（拆信封问题）。
 - 同一端点走流式 SSE 时反而输出标准格式。
-- 部分端点推理字段名是 ``reasoning`` 而非 ``reasoning_content``。
+- 部分端点推理字段名是 ``reasoning`` 而非 ``reasoning_content``，流式与
+  非流式两条路径都做了兼容。
 
 本插件以插件级 Provider 形式注册 ``openai-stream-compat`` 格式：
 不改动 core 任何代码，在 WebUI 新建 Provider 时选择「OpenAI 流式兼容」即可。
@@ -15,10 +16,13 @@
 import json
 import time
 from pathlib import Path
+from typing import AsyncGenerator
+
+from openai import APIStatusError, APITimeoutError, APIConnectionError
 
 from core.plugin import BasePlugin, logger
 from core.provider import ModelType, BaseProvider, ModelInfo
-from core.provider.llm_model import LLMRequest, LLMResponse
+from core.provider.llm_model import LLMRequest, LLMResponse, LLMStreamChunk
 from core.provider.provider_manager import ProviderManager
 from core.config.config_field import build_fields
 from core.utils.model_clients import (
@@ -107,10 +111,19 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
         # auto（默认）：流式优先，失败或产出异常时降级为信封解析
         try:
             resp = await self._chat_stream_aggregate(request, **kwargs)
-            if not (resp.text_response or resp.reasoning_content or resp.tool_calls) \
-                    and resp.input_tokens is None:
+            if not (resp.text_response or resp.reasoning_content or resp.tool_calls):
                 raise ValueError("stream produced empty response, fallback to envelope")
             return resp
+        except APIStatusError as e:
+            # 认证 / 限流类错误与是否流式无关，重试信封注定再失败 → 直接抛出
+            if e.status_code in (401, 403, 429):
+                raise
+            # 400/404/415/422/5xx 可能是端点不支持 stream 参数等 → 值得走信封试一次
+            logger.warning(
+                f"[openai-stream-compat] stream failed (HTTP {e.status_code}), "
+                "falling back to envelope mode"
+            )
+            return await self._chat_envelope(request, **kwargs)
         except Exception:
             logger.warning(
                 "[openai-stream-compat] stream failed, falling back to envelope mode"
@@ -157,6 +170,84 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
         resp.time_consumed = round(time.perf_counter() - start, 2)
         return resp
 
+    async def chat_stream(self, request: LLMRequest, **kwargs) -> AsyncGenerator[LLMStreamChunk, None]:
+        """重写父类 chat_stream：额外兼容流式事件里推理字段名为 reasoning
+        而非标准 reasoning_content 的端点（从 delta.model_extra 读取）。"""
+        client = self._build_client()
+        messages = await resolve_media_references(request.messages)
+        request_kwargs = self._build_request_kwargs(
+            request, messages=messages, stream=True, **kwargs
+        )
+        request_kwargs["stream_options"] = {"include_usage": True}
+
+        try:
+            stream = await client.chat.completions.create(**request_kwargs)
+            async for event in stream:
+                # Usage-only event (sent by OpenAI API after the final choice chunk)
+                if not event.choices:
+                    if event.usage:
+                        prompt_details = getattr(event.usage, "prompt_tokens_details", None)
+                        cached = getattr(prompt_details, "cached_tokens", None) if prompt_details else None
+                        yield LLMStreamChunk(
+                            is_final=True,
+                            usage={
+                                "input_tokens": event.usage.prompt_tokens,
+                                "output_tokens": event.usage.completion_tokens,
+                                "cached_tokens": cached,
+                            },
+                        )
+                    continue
+
+                choice = event.choices[0]
+                delta = choice.delta
+
+                chunk = LLMStreamChunk()
+
+                # Text content
+                if delta.content:
+                    chunk.delta_text = delta.content
+
+                # Reasoning content: standard reasoning_content, or non-standard
+                # reasoning stashed in delta.model_extra (this plugin's raison d'être)
+                reasoning = getattr(delta, "reasoning_content", "") or ""
+                if not reasoning:
+                    extra = getattr(delta, "model_extra", None)
+                    if isinstance(extra, dict):
+                        reasoning = extra.get("reasoning", "") or ""
+                if reasoning:
+                    chunk.delta_reasoning = reasoning
+
+                # Tool calls — pass through raw incremental deltas from SDK
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        fragment = {
+                            "index": tc.index,
+                            "id": tc.id or "",
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name if tc.function and tc.function.name else "",
+                                "arguments": tc.function.arguments if tc.function and tc.function.arguments else "",
+                            },
+                        }
+                        chunk.tool_calls_delta.append(fragment)
+
+                # Finish reason
+                finish_reason = choice.finish_reason
+                if finish_reason:
+                    chunk.is_final = True
+                    chunk.finish_reason = finish_reason
+
+                yield chunk
+
+        except APIStatusError:
+            raise
+        except APITimeoutError:
+            raise
+        except APIConnectionError:
+            raise
+        except Exception:
+            raise
+
     async def _chat_envelope(self, request: LLMRequest, **kwargs) -> LLMResponse:
         client = self._build_client()
         messages = await resolve_media_references(request.messages)
@@ -168,7 +259,13 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
         elapsed = round(time.perf_counter() - start, 2)
 
         bridge = _bridge_cfg(self.model)
-        env_path = bridge.get("envelope_path") or DEFAULT_ENVELOPE_PATH
+        env_path_raw = bridge.get("envelope_path")
+        if env_path_raw is None:
+            env_path = DEFAULT_ENVELOPE_PATH
+        elif str(env_path_raw).strip() == "":
+            env_path = None  # 空串 = 显式禁用信封兜底
+        else:
+            env_path = str(env_path_raw).strip()
         content_path = bridge.get("content_path") or DEFAULT_CONTENT_PATH
         reasoning_path = bridge.get("reasoning_path") or DEFAULT_REASONING_PATH
         tool_calls_path = bridge.get("tool_calls_path") or DEFAULT_TOOL_CALLS_PATH
@@ -180,7 +277,7 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
         # 信封根：model_extra[envelope_path]（可能为 list，取首个）
         extra = getattr(response, "model_extra", None)
         envelope = None
-        if isinstance(extra, dict):
+        if env_path and isinstance(extra, dict):
             envelope = extra.get(env_path)
         if isinstance(envelope, list) and envelope:
             envelope = envelope[0]
