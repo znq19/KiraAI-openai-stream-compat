@@ -1,7 +1,7 @@
 {
   "plugin_id": "openai-stream-compat",
   "display_name": "OpenAI 流式兼容",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "znq19",
   "description": "OpenAI compatible provider bridge: stream-first + envelope fallback LLM client. Solves non-standard endpoints whose non-stream responses are wrapped in model_extra envelope (e.g. deepseek cline channel).",
   "repo": "https://github.com/znq19/KiraAI-openai-stream-compat",
@@ -12,7 +12,7 @@
   "locales": {
     "zh": {
       "display_name": "OpenAI 流式兼容",
-      "description": "OpenAI 兼容 Provider 桥接：流式优先 + 信封兜底。解决部分端点非流式响应被塞进 model_extra 信封、推理字段名非标准（reasoning）等问题。"
+      "description": "OpenAI 兼容 Provider 桥接：流式优先 + 信封兜底。解决部分端点非流式响应被塞进 model_extra 信封、推理字段名非标准（reasoning）、流式 token 用量位置非标准等问题。"
     }
   }
 }
