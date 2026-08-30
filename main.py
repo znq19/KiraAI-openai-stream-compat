@@ -8,9 +8,15 @@
 - 同一端点走流式 SSE 时反而输出标准格式。
 - 部分端点推理字段名是 ``reasoning`` 而非 ``reasoning_content``，流式与
   非流式两条路径都做了兼容。
+- 部分端点的流式 token 用量不是「独立 usage-only 事件」，而是挂在最后一个
+  带内容的 chunk（或 event.model_extra['usage']）上，两种位置都会提取。
 
 本插件以插件级 Provider 形式注册 ``openai-stream-compat`` 格式：
 不改动 core 任何代码，在 WebUI 新建 Provider 时选择「OpenAI 流式兼容」即可。
+
+文件分工（v1.1.0）：
+- schema.json            → WebUI「附加功能」插件配置页（默认桥接模式 / 调试日志）
+- provider-schema.json   → Provider 新建表单与模型「桥接设置」的字段定义
 """
 
 import json
@@ -54,6 +60,30 @@ DEFAULT_REASONING_PATH = "choices.0.message.reasoning"
 DEFAULT_TOOL_CALLS_PATH = "choices.0.message.tool_calls"
 DEFAULT_USAGE_PATH = "usage"
 
+# 插件级默认配置（来自 WebUI 插件配置页，initialize 时同步；
+# 每个模型仍可在「桥接设置」里单独覆盖默认模式）
+_PLUGIN_CFG: dict = {"mode": "auto", "debug_log": False}
+
+
+def _cfg_get(cfg: dict, section: str, key: str, default=None):
+    """从插件配置里取字段，兼容两种存储布局：
+
+    - section 嵌套（schema 里字段定义在 section 下时，config 按 section 名嵌套存）
+    - 扁平字段（schema 顶层直接定义字段时，config 平铺）
+    """
+    if not isinstance(cfg, dict):
+        return default
+    if section and isinstance(cfg.get(section), dict) and key in cfg[section]:
+        return cfg[section][key]
+    if key in cfg:
+        return cfg[key]
+    return default
+
+
+def _debug() -> bool:
+    """是否输出调试日志（插件配置页 → 调试 → 调试日志）。"""
+    return bool(_PLUGIN_CFG.get("debug_log", False))
+
 
 def _dig(obj, path_str):
     """按 'a.b.c' / 'a.0.b' 路径在 dict / 对象(model_extra) 混合结构中取嵌套值。"""
@@ -87,6 +117,15 @@ def _bridge_cfg(model: ModelInfo) -> dict:
     return mcfg.get("section_bridge") or {}
 
 
+def _bridge_mode(model: ModelInfo) -> str:
+    """桥接模式：模型级 section_bridge.mode 优先，否则回退插件默认模式。"""
+    return (
+        _bridge_cfg(model).get("mode")
+        or _PLUGIN_CFG.get("mode")
+        or "auto"
+    ).strip().lower()
+
+
 def _to_dict(obj):
     """pydantic 对象 / 普通对象 → dict（解析工具调用等嵌套结构用）"""
     if hasattr(obj, "model_dump"):
@@ -108,7 +147,7 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
         super().__init__(model)
 
     async def chat(self, request: LLMRequest, **kwargs) -> LLMResponse:
-        mode = (_bridge_cfg(self.model).get("mode") or "auto").strip().lower()
+        mode = _bridge_mode(self.model)
         if mode == "stream":
             return await self._chat_stream_aggregate(request, **kwargs)
         if mode == "envelope":
@@ -131,11 +170,20 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
                 f"[openai-stream-compat] stream failed (HTTP {e.status_code}), "
                 "falling back to envelope mode"
             )
+            if _debug():
+                logger.info(
+                    f"[openai-stream-compat] debug: HTTP {e.status_code} → envelope retry"
+                )
             return await self._chat_envelope(request, **kwargs)
-        except Exception:
+        except Exception as e:
             logger.warning(
-                "[openai-stream-compat] stream failed, falling back to envelope mode"
+                f"[openai-stream-compat] stream failed ({type(e).__name__}), "
+                "falling back to envelope mode"
             )
+            if _debug():
+                logger.info(
+                    f"[openai-stream-compat] debug: {type(e).__name__} → envelope retry"
+                )
             return await self._chat_envelope(request, **kwargs)
 
     async def _chat_stream_aggregate(self, request: LLMRequest, **kwargs) -> LLMResponse:
@@ -175,12 +223,66 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
             resp.input_tokens = usage.get("input_tokens")
             resp.output_tokens = usage.get("output_tokens")
             resp.cached_tokens = usage.get("cached_tokens")
+        elif _debug():
+            logger.info(
+                "[openai-stream-compat] debug: stream finished but no usage found "
+                "(no usage-only event / usage on chunk / usage in model_extra)"
+            )
         resp.time_consumed = round(time.perf_counter() - start, 2)
         return resp
 
+    @staticmethod
+    def _extract_usage(event) -> dict | None:
+        """从流式事件里提取 token 用量，兼容两种形态：
+
+        - 标准 OpenAI 解析出的 ``event.usage``（prompt_tokens / completion_tokens），
+          可能出现在独立的 usage-only 事件，也可能直接挂在最后一个带内容的 chunk 上；
+        - 非标准端点塞在 ``event.model_extra['usage']`` 的 dict
+          （字段可能叫 input_tokens / output_tokens）。
+        """
+        usage = getattr(event, "usage", None)
+        if usage is not None:
+            prompt_details = getattr(usage, "prompt_tokens_details", None)
+            return {
+                "input_tokens": getattr(usage, "prompt_tokens", None),
+                "output_tokens": getattr(usage, "completion_tokens", None),
+                "cached_tokens": (
+                    getattr(prompt_details, "cached_tokens", None)
+                    if prompt_details is not None
+                    else None
+                ),
+            }
+        extra = getattr(event, "model_extra", None)
+        if isinstance(extra, dict):
+            u = extra.get("usage")
+            if isinstance(u, dict):
+                details = u.get("prompt_tokens_details") or {}
+                # 字段名兼容：prompt_tokens→input_tokens / completion_tokens→output_tokens；
+                # 用 is not None 判断而非 or，避免 token 数量为 0 时被误判为缺失
+                in_t = u.get("prompt_tokens")
+                if in_t is None:
+                    in_t = u.get("input_tokens")
+                out_t = u.get("completion_tokens")
+                if out_t is None:
+                    out_t = u.get("output_tokens")
+                cached = details.get("cached_tokens")
+                if cached is None:
+                    cached = u.get("cached_tokens")
+                return {
+                    "input_tokens": in_t,
+                    "output_tokens": out_t,
+                    "cached_tokens": cached,
+                }
+        return None
+
     async def chat_stream(self, request: LLMRequest, **kwargs) -> AsyncGenerator[LLMStreamChunk, None]:
-        """重写父类 chat_stream：额外兼容流式事件里推理字段名为 reasoning
-        而非标准 reasoning_content 的端点（从 delta.model_extra 读取）。"""
+        """重写父类 chat_stream：额外兼容两处非标准行为——
+
+        - 推理字段名为 ``reasoning`` 而非标准 ``reasoning_content``
+          （从 delta.model_extra 读取）；
+        - token 用量可能出现在独立 usage-only 事件、最后一个带内容的 chunk、
+          或 event.model_extra['usage'] 任意位置，都会提取。
+        """
         client = self._build_client()
         messages = await resolve_media_references(request.messages)
         request_kwargs = self._build_request_kwargs(
@@ -191,25 +293,21 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
         try:
             stream = await client.chat.completions.create(**request_kwargs)
             async for event in stream:
-                # Usage-only event (sent by OpenAI API after the final choice chunk)
+                usage_dict = self._extract_usage(event)
+
+                # 独立 usage-only 事件（OpenAI 标准流式在最终内容 chunk 后补发）
                 if not event.choices:
-                    if event.usage:
-                        prompt_details = getattr(event.usage, "prompt_tokens_details", None)
-                        cached = getattr(prompt_details, "cached_tokens", None) if prompt_details else None
-                        yield LLMStreamChunk(
-                            is_final=True,
-                            usage={
-                                "input_tokens": event.usage.prompt_tokens,
-                                "output_tokens": event.usage.completion_tokens,
-                                "cached_tokens": cached,
-                            },
-                        )
+                    if usage_dict:
+                        yield LLMStreamChunk(is_final=True, usage=usage_dict)
                     continue
 
                 choice = event.choices[0]
                 delta = choice.delta
 
                 chunk = LLMStreamChunk()
+                # 非标准端点：usage 直接挂在最后一个带内容的 chunk 上
+                if usage_dict:
+                    chunk.usage = usage_dict
 
                 # Text content
                 if delta.content:
@@ -336,10 +434,21 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
                 })
 
         if isinstance(usage, dict):
-            resp.input_tokens = usage.get("prompt_tokens")
-            resp.output_tokens = usage.get("completion_tokens")
+            # 字段名兼容：prompt_tokens→input_tokens / completion_tokens→output_tokens；
+            # 用 is not None 判断而非 or，避免 token 数量为 0 时被误判为缺失
+            in_t = usage.get("prompt_tokens")
+            if in_t is None:
+                in_t = usage.get("input_tokens")
+            out_t = usage.get("completion_tokens")
+            if out_t is None:
+                out_t = usage.get("output_tokens")
             details = usage.get("prompt_tokens_details") or {}
-            resp.cached_tokens = details.get("cached_tokens")
+            cached = details.get("cached_tokens")
+            if cached is None:
+                cached = usage.get("cached_tokens")
+            resp.input_tokens = in_t
+            resp.output_tokens = out_t
+            resp.cached_tokens = cached
         elif usage is not None:
             resp.input_tokens = getattr(usage, "prompt_tokens", None)
             resp.output_tokens = getattr(usage, "completion_tokens", None)
@@ -351,6 +460,12 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
             logger.warning(
                 "[openai-stream-compat] envelope parse returned empty; "
                 "check envelope/content paths for this endpoint"
+            )
+        elif _debug():
+            logger.info(
+                "[openai-stream-compat] debug: envelope ok "
+                f"(content={bool(resp.text_response)} reasoning={bool(resp.reasoning_content)} "
+                f"tool_calls={len(resp.tool_calls)} in={resp.input_tokens} out={resp.output_tokens})"
             )
         return resp
 
@@ -404,8 +519,33 @@ class OpenAIStreamCompatPlugin(BasePlugin):
         super().__init__(ctx, cfg)
 
     async def initialize(self):
+        # ── 插件级配置（WebUI 插件配置页，供 Provider/Client 侧读取）──
+        mode = str(_cfg_get(self.plugin_cfg, "section_defaults", "default_mode", "auto")).strip().lower()
+        if mode not in ("auto", "stream", "envelope"):
+            mode = "auto"
+        _PLUGIN_CFG["mode"] = mode
+        _PLUGIN_CFG["debug_log"] = bool(_cfg_get(self.plugin_cfg, "section_debug", "debug_log", False))
+        if _debug():
+            logger.info(f"[openai-stream-compat] debug: plugin cfg mode={mode} debug_log=True")
+
         manifest = json.loads((PLUGIN_DIR / "manifest.json").read_text(encoding="utf-8"))
-        raw_schema = json.loads((PLUGIN_DIR / "schema.json").read_text(encoding="utf-8"))
+
+        # ── Provider 表单 schema ──
+        # 优先 provider-schema.json（v1.1.0 拆分）；旧版本安装只有 schema.json
+        #（内含 provider_config），做一次兼容回退，避免升级后 Provider 表单丢失
+        provider_schema_path = PLUGIN_DIR / "provider-schema.json"
+        if provider_schema_path.exists():
+            raw_schema = json.loads(provider_schema_path.read_text(encoding="utf-8"))
+        else:
+            legacy = json.loads((PLUGIN_DIR / "schema.json").read_text(encoding="utf-8"))
+            raw_schema = {
+                "provider_config": legacy.get("provider_config") or {},
+                "model_config": legacy.get("model_config") or {},
+            }
+            logger.warning(
+                "[openai-stream-compat] provider-schema.json not found, "
+                "falling back to legacy schema.json layout"
+            )
 
         provider_fields = build_fields(raw_schema.get("provider_config") or {})
         model_fields = {}
