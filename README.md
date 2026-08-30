@@ -15,6 +15,7 @@
 - 📦 **信封兜底**：流式失败或产出为空时，自动从 `model_extra` 信封路径解析内容
 - 🧠 **推理字段兼容**：`reasoning` 字段自动映射为标准 `reasoning_content`（流式、非流式两条路径都兼容）
 - 🛠️ **路径全可配**：信封路径、内容路径、推理路径、工具调用路径、用量路径全部支持点分路径自定义，适配各种怪胎端点
+- 🎙️ **全模型类型**：LLM / TTS / STT / 图像 / 嵌入，与官方 OpenAI Provider 能力对齐（STT 为 KiraAI v2.32.0+ 新增）
 - 🧩 **插件级接入**：不改框架，热重载即生效
 
 ---
@@ -38,6 +39,8 @@
 6. 保存后拉取/添加模型，把某个模型设置为默认 LLM 即可开聊
 
 > 需要 Python 依赖：`openai`、`httpx`（KiraAI 本体已依赖，一般无需额外安装）
+>
+> **版本兼容**：适配 KiraAI `v2.32.0` 最新 OpenAI 官方 Provider（含 STT 语音转写支持）；旧版本（`v2.29.7`+）也能跑，STT 不可用时自动降级。
 
 ---
 
@@ -63,6 +66,8 @@
 | `usage_path` | string | `usage` | token 用量对象的点分路径 |
 
 > 所有桥接配置都在「桥接设置」里折叠着，**不填也能跑**（默认 `auto` 模式）。
+
+STT 模型（v2.32.0+）另有 `timeout` / `language` / `prompt` 三个配置项，与官方 OpenAI Provider 一致。
 
 ---
 
@@ -120,7 +125,7 @@ A：非标准兼容实现。本插件默认路径就用 `reasoning`，但会自�
 
 ## 🧩 工作原理（一句话版）
 
-在插件加载时把 `OpenAIStreamCompatProvider` 注册进 `ProviderManager` 注册表（`_registry` / `_schemas` / `_manifests`），WebUI 即可选到「OpenAI 流式兼容」格式；LLM 客户端继承官方 `OpenAICompatibleLLMClient`，重写 `chat()`（流式优先、分级兜底）和 `chat_stream()`（流式推理字段兼容）：先聚合流式，不行就掏信封。
+在插件加载时把 `OpenAIStreamCompatProvider` 注册进 `ProviderManager` 注册表（`_registry` / `_schemas` / `_manifests`），WebUI 即可选到「OpenAI 流式兼容」格式；LLM 客户端继承官方 `OpenAICompatibleLLMClient`，重写 `chat()`（流式优先、分级兜底）和 `chat_stream()`（流式推理字段兼容）：先聚合流式，不行就掏信封。其余模型类型（TTS / STT / 图像 / 嵌入）直接复用官方客户端，不重复造轮子。
 
 ## 📄 许可证
 
