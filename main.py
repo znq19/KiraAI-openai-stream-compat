@@ -114,6 +114,9 @@ class OpenAIStreamCompatLLMClient(OpenAICompatibleLLMClient):
             if not (resp.text_response or resp.reasoning_content or resp.tool_calls):
                 raise ValueError("stream produced empty response, fallback to envelope")
             return resp
+        except (APITimeoutError, APIConnectionError):
+            # 超时 / 连接失败与是否流式无关，重试信封只会再白等一轮 → 直接抛出
+            raise
         except APIStatusError as e:
             # 认证 / 限流类错误与是否流式无关，重试信封注定再失败 → 直接抛出
             if e.status_code in (401, 403, 429):
