@@ -43,7 +43,7 @@
 
 > 需要 Python 依赖：`openai`、`httpx`（KiraAI 本体已依赖，一般无需额外安装）
 >
-> **版本兼容**：适配 KiraAI `v2.32.0` 最新 OpenAI 官方 Provider（含 STT 语音转写支持）；旧版本（`v2.29.7`+）也能跑，STT 不可用时自动降级。
+> **版本兼容**：适配 KiraAI `v2.32.0` 最新 OpenAI 官方 Provider（含 STT 语音转写支持）；旧版本（`v2.29.7`+）也能跑，STT 不可用时自动降级。兼容 **3.0 全系列**（含 v3.0.0-rc.1：公共客户端已迁至 `core.provider.openai_compatible`，v1.1.1 起导入走候选链自动适配，不绑版本号）。
 >
 > **升级自 v1.0.x**：`schema.json` 已改为插件配置页描述，Provider 表单字段迁移到 `provider-schema.json`。插件启动时会自动回退读取旧布局，但建议直接使用本仓库最新文件（四个文件一起替换）。
 
@@ -152,6 +152,11 @@ A：非标准兼容实现。本插件默认路径就用 `reasoning`，但会自�
 
 <details>
 <summary>📜 更新日志（点击展开）</summary>
+
+### v1.1.1（2026-10-12）
+
+- 🔧 **3.0 兼容：导入链双形态化**——`core.utils.model_clients` 在 3.0（v3.0.0-rc.1）已删除（公共客户端迁至 `core.provider.openai_compatible`），顶部裸导入在 3.0 上**导入期即 ModuleNotFoundError、插件无法加载**；现改候选链（优先新路径、`ImportError` 回退旧路径），STT 可选降级语义两代各自保留，并删除一处会"回盖"的旧 STT 导入块。2.x 行为不变
+- 📖 版本兼容注补 3.0 全系列说明
 
 ### v1.1.0（2026-08-30）
 
